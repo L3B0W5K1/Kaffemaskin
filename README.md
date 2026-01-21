@@ -12,7 +12,7 @@ simon@simon-UP-APL01:~/leshan/leshan-demo-client$ java -jar target/leshan-demo-c
 
 
 
-        wakaama:
+wakaama:
 setup:
 simon@simon-UP-APL01:~/wakaama/examples/client/udp$ cmake -S . -B build-client-udp
 simon@simon-UP-APL01:~/wakaama/examples/client/udp$ cmake --build build-client-udp
