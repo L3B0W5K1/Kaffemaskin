@@ -260,33 +260,6 @@ INFO [anjay]      registration successful
 
 ---
 
-## Hardware Wiring (LED Verification)
-
-To verify GPIO activation with an LED:
-
-```
-RPi Pin 11 (GPIO 17) ──── 330Ω Resistor ──── LED long leg (+) ──── LED short leg (-) ──── Pin 9 (GND)
-```
-
-Pin reference:
-
-```
-Pin 1  [3V3]    [5V]   Pin 2
-Pin 3  [SDA]    [5V]   Pin 4
-Pin 5  [SCL]    [GND]  Pin 6
-Pin 7  [GP4]    [TX]   Pin 8
-Pin 9  [GND] ◄──       Pin 10
-Pin 11 [GP17] ◄──      Pin 12
-```
-
-A 220Ω–470Ω resistor works fine. If the LED doesn't light up, flip it around (long leg = positive).
-
-### Relay Module
-
-Connect the relay signal pin to GPIO 17, power the relay from 5V/GND.
-
----
-
 ## Running Without Root
 
 Add your user to the `gpio` group to access `/dev/gpiochip0` without `sudo`:
