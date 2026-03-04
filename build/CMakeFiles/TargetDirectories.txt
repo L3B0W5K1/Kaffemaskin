@@ -1,0 +1,7 @@
+/home/simon/Kaffe/build/CMakeFiles/lwm2m_gpio_client.dir
+/home/simon/Kaffe/build/CMakeFiles/edit_cache.dir
+/home/simon/Kaffe/build/CMakeFiles/rebuild_cache.dir
+/home/simon/Kaffe/build/CMakeFiles/list_install_components.dir
+/home/simon/Kaffe/build/CMakeFiles/install.dir
+/home/simon/Kaffe/build/CMakeFiles/install/local.dir
+/home/simon/Kaffe/build/CMakeFiles/install/strip.dir
