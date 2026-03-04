@@ -6,7 +6,7 @@ An [Anjay](https://github.com/AVSystem/Anjay)-based LwM2M client that exposes GP
 
 ```
 ┌──────────────────────────────┐         CoAP/UDP         ┌─────────────────────┐
-│       Linux Board / RPi      │ ◄──────────────────────► │   Leshan Server     │
+│       Raspberry Pi           │ ◄──────────────────────► │   Leshan Server     │
 │                              │                           │                     │
 │  ┌────────────────────────┐  │   Register / Observe /    │  ┌───────────────┐  │
 │  │  Anjay LwM2M Client    │  │   Read / Write / Execute  │  │  Web UI       │  │
@@ -16,8 +16,8 @@ An [Anjay](https://github.com/AVSystem/Anjay)-based LwM2M client that exposes GP
 │  │  /26241 GPIO Controller│──┼───── Execute /26241/0/2 ──┤  Click "Exe" on     │
 │  │         │              │  │      ──────────────────►  │  Resource 2         │
 │  │         ▼              │  │                           │                     │
-│  │   sysfs GPIO write     │  │                           └─────────────────────┘
-│  │   /sys/class/gpio/...  │  │
+│  │   libgpiod             │  │                           └─────────────────────┘
+│  │   /dev/gpiochip0       │  │
 │  └─────────┬──────────────┘  │
 │            │                 │
 │            ▼                 │
@@ -43,12 +43,13 @@ An [Anjay](https://github.com/AVSystem/Anjay)-based LwM2M client that exposes GP
 .
 ├── CMakeLists.txt
 ├── README.md
-├── 26241-gpio-controller.xml   # Object model XML for Leshan
+├── leshan-configs/
+│   └── 26241.xml               # Object model XML for Leshan
 ├── deps/
 │   └── Anjay/                  # Anjay library (cloned during setup)
 └── src/
     ├── main.c                  # Client entry point & event loop
-    ├── gpio_object.c           # Custom GPIO object implementation
+    ├── gpio_object.c           # Custom GPIO object implementation (libgpiod)
     └── gpio_object.h           # GPIO object header
 ```
 
@@ -56,17 +57,27 @@ An [Anjay](https://github.com/AVSystem/Anjay)-based LwM2M client that exposes GP
 
 ## Prerequisites
 
-- Linux system (tested on Ubuntu 24.04, UP Board / Raspberry Pi)
+- Raspberry Pi (tested on RPi 4, Bookworm/Trixie)
 - GCC, CMake, Make
-- OpenSSL dev headers
 - Python 3.8+ (for Anjay build)
 - Java 17+ (for Leshan server)
+- libgpiod 2.x
 
 Install build dependencies:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git cmake gcc g++ make libssl-dev python3 python3-venv zlib1g-dev
+sudo apt-get install -y git cmake gcc g++ make python3 python3-venv zlib1g-dev libgpiod-dev gpiod
+```
+
+For DTLS support, install **one** of:
+
+```bash
+# Option A: MbedTLS (Anjay default)
+sudo apt-get install -y libmbedtls-dev
+
+# Option B: OpenSSL (if MbedTLS is unavailable)
+sudo apt-get install -y libssl-dev
 ```
 
 ---
@@ -116,13 +127,14 @@ cmake .. \
     -DWITH_LIBRARY_SHARED=ON
 ```
 
-Alternatively, skip the demo entirely (you don't need it):
+If MbedTLS is not installed and you want to use OpenSSL instead, add:
 
 ```bash
 cmake .. \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DWITH_LIBRARY_SHARED=ON \
-    -DWITHOUT_DEMO=ON
+    -DPython3_EXECUTABLE=$(which python3) \
+    -DDTLS_BACKEND=openssl
 ```
 
 Then compile and install:
@@ -154,10 +166,10 @@ This produces the `lwm2m_gpio_client` binary in the `build/` directory.
 
 ### Install the Object Model
 
-Copy `26241-gpio-controller.xml` to Leshan's models directory:
+Copy `leshan-configs/26241.xml` to Leshan's models directory:
 
 ```bash
-cp 26241-gpio-controller.xml /path/to/leshan/leshan-demo-server/models/
+cp leshan-configs/26241.xml /path/to/leshan/leshan-demo-server/models/
 ```
 
 ### Important: XML Model Requirements
@@ -197,13 +209,15 @@ Without `-m`, Leshan won't load custom object definitions and `/26241` will appe
 ## Step 4: Run the Client
 
 ```bash
-./build/lwm2m_gpio_client -s <LESHAN_SERVER_IP> -p 5683
+sudo ./build/lwm2m_gpio_client -s <LESHAN_SERVER_IP> -p 5683
 ```
 
-If running on the same machine:
+> **Note:** `sudo` is needed to access `/dev/gpiochip0`. See [Running Without Root](#running-without-root) to avoid this.
+
+If running on the same machine as Leshan:
 
 ```bash
-./build/lwm2m_gpio_client -s 127.0.0.1 -p 5683
+sudo ./build/lwm2m_gpio_client -s 127.0.0.1 -p 5683
 ```
 
 ### Command Line Options
@@ -223,12 +237,11 @@ INFO [lwm2m_main]   Server:   coap://127.0.0.1:5683
 INFO [anjay]      Initializing Anjay 3.12.0
 INFO [anjay_dm]   successfully registered object /0
 INFO [anjay_dm]   successfully registered object /1
+INFO [gpio_obj]   GPIO 17 configured as output (state=0)
 INFO [anjay_dm]   successfully registered object /26241
 INFO [gpio_obj]   GPIO Object /26241 installed (instance 0, pin 17)
 INFO [anjay]      registration successful
 ```
-
-> **Note:** If you see `Cannot open /sys/class/gpio/export: No such file or directory`, your board doesn't use sysfs GPIO. This is normal on non-Raspberry Pi boards — the object still registers, but GPIO hardware control won't work until you adapt the GPIO backend (see [GPIO Backend](#gpio-backend-adaptation) below).
 
 ---
 
@@ -241,54 +254,52 @@ INFO [anjay]      registration successful
 5. Available operations:
    - **Read** Resource 0 → shows the BCM pin number
    - **Write** Resource 4 → set pulse duration (e.g. `2000` for 2 seconds)
-   - **Execute** Resource 2 (Activate) → GPIO goes HIGH for the set duration
+   - **Execute** Resource 2 (Activate) → GPIO goes HIGH for the set duration, then returns to LOW
    - **Execute** Resource 3 (Deactivate) → forces GPIO LOW immediately
    - **Write** Resource 1 → directly set HIGH (`true`) or LOW (`false`)
 
 ---
 
-## Hardware Wiring (Raspberry Pi Example)
+## Hardware Wiring (LED Verification)
 
-### LED
+To verify GPIO activation with an LED:
 
 ```
-RPi BCM 17 (pin 11) ──── 330Ω resistor ──── LED (+) ──── GND (pin 9)
+RPi Pin 11 (GPIO 17) ──── 330Ω Resistor ──── LED long leg (+) ──── LED short leg (-) ──── Pin 9 (GND)
 ```
+
+Pin reference:
+
+```
+Pin 1  [3V3]    [5V]   Pin 2
+Pin 3  [SDA]    [5V]   Pin 4
+Pin 5  [SCL]    [GND]  Pin 6
+Pin 7  [GP4]    [TX]   Pin 8
+Pin 9  [GND] ◄──       Pin 10
+Pin 11 [GP17] ◄──      Pin 12
+```
+
+A 220Ω–470Ω resistor works fine. If the LED doesn't light up, flip it around (long leg = positive).
 
 ### Relay Module
 
-Connect the relay signal pin to BCM 17, power the relay from 5V/GND.
-
----
-
-## GPIO Backend Adaptation
-
-The client uses Linux sysfs GPIO (`/sys/class/gpio/`), which works on Raspberry Pi but may not be available on all boards. If your board uses a different GPIO interface:
-
-- **libgpiod (recommended for modern kernels):** Replace the `gpio_export`/`gpio_write`/`gpio_read` functions in `gpio_object.c` with `libgpiod` calls.
-- **Memory-mapped GPIO:** Use `/dev/gpiomem` for direct register access.
-- **Other SBCs (UP Board, BeagleBone, etc.):** Check if sysfs GPIO is enabled or use the board's specific GPIO library.
+Connect the relay signal pin to GPIO 17, power the relay from 5V/GND.
 
 ---
 
 ## Running Without Root
 
-On Raspberry Pi, create a udev rule for GPIO access:
+Add your user to the `gpio` group to access `/dev/gpiochip0` without `sudo`:
 
 ```bash
-sudo tee /etc/udev/rules.d/99-gpio.rules << 'EOF'
-SUBSYSTEM=="gpio", KERNEL=="gpiochip*", ACTION=="add", \
-    PROGRAM="/bin/sh -c 'chown root:gpio /sys/class/gpio/export /sys/class/gpio/unexport; chmod 220 /sys/class/gpio/export /sys/class/gpio/unexport'"
-SUBSYSTEM=="gpio", KERNEL=="gpio*", ACTION=="add", \
-    PROGRAM="/bin/sh -c 'chown root:gpio /sys%p/active_low /sys%p/direction /sys%p/edge /sys%p/value; chmod 660 /sys%p/active_low /sys%p/direction /sys%p/edge /sys%p/value'"
-EOF
-
 sudo usermod -aG gpio $(whoami)
-sudo udevadm control --reload-rules
-sudo udevadm trigger
 ```
 
-Reboot or re-login for group changes to take effect. If you still get permission errors, run with `sudo`.
+Log out and back in for the group change to take effect. Then you can run the client without `sudo`:
+
+```bash
+./build/lwm2m_gpio_client -s 127.0.0.1 -p 5683
+```
 
 ---
 
@@ -296,15 +307,16 @@ Reboot or re-login for group changes to take effect. If you still get permission
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `Python3 is not from a virtualenv` | Anjay CMake requires venv | Create venv: `python3 -m venv .venv && source .venv/bin/activate` |
-| Venv active but CMake still fails | Cached old Python path | Pass `-DPython3_EXECUTABLE=$(which python3)` or delete `CMakeCache.txt` |
-| `Default Max Period is non-positive` | Anjay 3.12 rejects `0` for period fields | Use `-1` for `default_min_period` and `default_max_period` |
+| `Python3 is not from a virtualenv` | Anjay CMake requires venv | `python3 -m venv .venv && source .venv/bin/activate` |
+| Venv active but CMake still fails | Cached old Python path | Add `-DPython3_EXECUTABLE=$(which python3)` or delete `CMakeCache.txt` |
+| `MBEDTLS_INCLUDE_DIR-NOTFOUND` | MbedTLS dev headers missing | `sudo apt install libmbedtls-dev` or use `-DDTLS_BACKEND=openssl` |
+| `Default Max Period is non-positive` | Anjay 3.12 rejects `0` for period fields | Use `-1` for `default_min_period` and `default_max_period` in code |
 | `Cannot find source file: src/main.c` | Source files not in project directory | Ensure `src/main.c`, `src/gpio_object.c`, `src/gpio_object.h` exist |
-| `Cannot open /sys/class/gpio/export` | Board doesn't support sysfs GPIO | Normal on non-RPi boards; object still registers. Adapt GPIO backend. |
+| `Cannot open /dev/gpiochip0` | Permission denied | Run with `sudo` or add user to `gpio` group |
 | Leshan: `Invalid DDF file` + `Description2 expected` | Missing `<Description2>` tag in XML | Add `<Description2></Description2>` after `</Resources>` |
 | Leshan: `LWM2MVersion not consistent` | Version mismatch between schema and tag | XML decl: `version="1.0"`, LWM2MVersion: `1.1` to match v1_1 schema |
 | Object `/26241` not visible in Leshan | Model XML not loaded | Start Leshan with `-m models/` flag pointing to the XML directory |
-| `/26241` shows but no instances | Pointer cast bug in handlers | Use `(gpio_object_t *)obj_ptr` not `(gpio_object_t *)*obj_ptr` |
+| `/26241` shows but no instances | Need to expand Instance 0 in UI | Click on `/26241`, expand Instance 0, click Read |
 | Client doesn't appear in Leshan | Firewall blocking CoAP | `sudo ufw allow 5683/udp` on both machines |
 
 ---
