@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LWM2M xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:noNamespaceSchemaLocation="http://www.openmobilealliance.org/tech/profiles/LWM2M-v1_1.xsd">
+    <Object ObjectType="MODefinition">
+        <Name>GPIO Controller</Name>
+        <Description1>Custom object to control Raspberry Pi GPIO pins remotely via LwM2M Execute operations.</Description1>
+        <ObjectID>26241</ObjectID>
+        <ObjectURN>urn:oma:lwm2m:x:26241</ObjectURN>
+        <LWM2MVersion>1.1</LWM2MVersion>
+        <ObjectVersion>1.0</ObjectVersion>
+        <MultipleInstances>Multiple</MultipleInstances>
+        <Mandatory>Optional</Mandatory>
+        <Resources>
+            <Item ID="0">
+                <Name>GPIO Pin</Name>
+                <Operations>RW</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Mandatory</Mandatory>
+                <Type>Integer</Type>
+                <RangeEnumeration>0..27</RangeEnumeration>
+                <Units></Units>
+                <Description>BCM GPIO pin number (0-27).</Description>
+            </Item>
+            <Item ID="1">
+                <Name>GPIO State</Name>
+                <Operations>RW</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Mandatory</Mandatory>
+                <Type>Boolean</Type>
+                <RangeEnumeration></RangeEnumeration>
+                <Units></Units>
+                <Description>Current state of the GPIO pin. true = HIGH, false = LOW.</Description>
+            </Item>
+            <Item ID="2">
+                <Name>Activate</Name>
+                <Operations>E</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Mandatory</Mandatory>
+                <Type></Type>
+                <RangeEnumeration></RangeEnumeration>
+                <Units></Units>
+                <Description>Set GPIO HIGH for Pulse Duration ms then return to LOW.</Description>
+            </Item>
+            <Item ID="3">
+                <Name>Deactivate</Name>
+                <Operations>E</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Optional</Mandatory>
+                <Type></Type>
+                <RangeEnumeration></RangeEnumeration>
+                <Units></Units>
+                <Description>Immediately force the GPIO pin LOW.</Description>
+            </Item>
+            <Item ID="4">
+                <Name>Pulse Duration</Name>
+                <Operations>RW</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Mandatory</Mandatory>
+                <Type>Integer</Type>
+                <RangeEnumeration>0..60000</RangeEnumeration>
+                <Units>ms</Units>
+                <Description>Duration in ms that Activate keeps the pin HIGH.</Description>
+            </Item>
+            <Item ID="5">
+                <Name>Description</Name>
+                <Operations>R</Operations>
+                <MultipleInstances>Single</MultipleInstances>
+                <Mandatory>Optional</Mandatory>
+                <Type>String</Type>
+                <RangeEnumeration></RangeEnumeration>
+                <Units></Units>
+                <Description>Human-readable label for this GPIO instance.</Description>
+            </Item>
+        </Resources>
+        <Description2></Description2>
+    </Object>
+</LWM2M>
