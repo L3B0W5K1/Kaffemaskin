@@ -1,8 +1,8 @@
 /**
  * gpio_object.c - Custom LwM2M Object 26241: GPIO Controller
  *
- * Uses Linux sysfs GPIO interface (/sys/class/gpio/) for broad compatibility
- * with Raspberry Pi models. No external libraries needed.
+ * Uses libgpiod (v2) for GPIO access. Works on Raspberry Pi 4/5
+ * and any board with /dev/gpiochipN.
  */
 
 #include "gpio_object.h"
@@ -11,84 +11,14 @@
 #include <avsystem/commons/avs_list.h>
 #include <avsystem/commons/avs_log.h>
 
+#include <gpiod.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <stdbool.h>
-
-/* ------------------------------------------------------------------ */
-/*  Low-level sysfs GPIO helpers                                      */
-/* ------------------------------------------------------------------ */
-
-static int gpio_export(int pin) {
-    char buf[64];
-    int fd = open("/sys/class/gpio/export", O_WRONLY);
-    if (fd < 0) {
-        snprintf(buf, sizeof(buf), "/sys/class/gpio/gpio%d/direction", pin);
-        if (access(buf, F_OK) == 0) return 0;   /* already exported */
-        avs_log(gpio_obj, ERROR, "Cannot open /sys/class/gpio/export: %s",
-                 strerror(errno));
-        return -1;
-    }
-    int len = snprintf(buf, sizeof(buf), "%d", pin);
-    write(fd, buf, len);
-    close(fd);
-    usleep(100000);  /* give kernel time to create sysfs entries */
-    return 0;
-}
-
-static int gpio_unexport(int pin) {
-    char buf[64];
-    int fd = open("/sys/class/gpio/unexport", O_WRONLY);
-    if (fd < 0) return -1;
-    int len = snprintf(buf, sizeof(buf), "%d", pin);
-    write(fd, buf, len);
-    close(fd);
-    return 0;
-}
-
-static int gpio_set_direction(int pin, const char *dir) {
-    char path[128];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        avs_log(gpio_obj, ERROR, "Cannot set direction for GPIO %d: %s",
-                 pin, strerror(errno));
-        return -1;
-    }
-    write(fd, dir, strlen(dir));
-    close(fd);
-    return 0;
-}
-
-static int gpio_write(int pin, int value) {
-    char path[128];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        avs_log(gpio_obj, ERROR, "Cannot write GPIO %d: %s",
-                 pin, strerror(errno));
-        return -1;
-    }
-    const char *v = value ? "1" : "0";
-    write(fd, v, 1);
-    close(fd);
-    return 0;
-}
-
-static int gpio_read(int pin) {
-    char path[128], val[4] = {0};
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
-    read(fd, val, sizeof(val) - 1);
-    close(fd);
-    return atoi(val);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Instance data                                                      */
@@ -97,20 +27,22 @@ static int gpio_read(int pin) {
 typedef struct {
     anjay_iid_t iid;
 
-    int      gpio_pin;           /* BCM pin number                   */
+    int      gpio_pin;           /* BCM pin / line number             */
     bool     gpio_state;         /* current logical state             */
     int      pulse_duration_ms;  /* how long Activate keeps pin HIGH  */
     char     description[64];    /* human-readable label              */
 
-    bool     pin_exported;       /* have we exported this pin?        */
+    /* libgpiod handles */
+    struct gpiod_chip    *chip;
+    struct gpiod_line_request *line_request;
 
-    /* Pulse timer: when activate_deadline > 0, pin is in pulse mode  */
+    /* Pulse timer */
     struct timespec activate_deadline;
 } gpio_instance_t;
 
 typedef struct {
     const anjay_dm_object_def_t *def;
-    gpio_instance_t instances[8]; /* support up to 8 GPIO instances */
+    gpio_instance_t instances[8];
     int num_instances;
 } gpio_object_t;
 
@@ -128,21 +60,85 @@ static gpio_instance_t *find_instance(gpio_object_t *obj, anjay_iid_t iid) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Helper: setup GPIO hardware for an instance                        */
+/*  libgpiod helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-static int setup_gpio_hw(gpio_instance_t *inst) {
-    if (inst->pin_exported) {
-        gpio_unexport(inst->gpio_pin);
-        inst->pin_exported = false;
+static void release_gpio(gpio_instance_t *inst) {
+    if (inst->line_request) {
+        gpiod_line_request_release(inst->line_request);
+        inst->line_request = NULL;
     }
-    if (gpio_export(inst->gpio_pin) != 0) return -1;
-    inst->pin_exported = true;
-    if (gpio_set_direction(inst->gpio_pin, "out") != 0) return -1;
-    gpio_write(inst->gpio_pin, inst->gpio_state ? 1 : 0);
+    if (inst->chip) {
+        gpiod_chip_close(inst->chip);
+        inst->chip = NULL;
+    }
+}
+
+static int setup_gpio_hw(gpio_instance_t *inst) {
+    release_gpio(inst);
+
+    /* Open the GPIO chip */
+    inst->chip = gpiod_chip_open("/dev/gpiochip0");
+    if (!inst->chip) {
+        avs_log(gpio_obj, ERROR, "Cannot open /dev/gpiochip0");
+        return -1;
+    }
+
+    /* Request the line as output */
+    struct gpiod_line_settings *settings = gpiod_line_settings_new();
+    if (!settings) {
+        avs_log(gpio_obj, ERROR, "Cannot create line settings");
+        release_gpio(inst);
+        return -1;
+    }
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT);
+    gpiod_line_settings_set_output_value(settings,
+        inst->gpio_state ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
+
+    struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+    if (!line_cfg) {
+        avs_log(gpio_obj, ERROR, "Cannot create line config");
+        gpiod_line_settings_free(settings);
+        release_gpio(inst);
+        return -1;
+    }
+    unsigned int offset = (unsigned int)inst->gpio_pin;
+    gpiod_line_config_add_line_settings(line_cfg, &offset, 1, settings);
+
+    struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+    if (req_cfg) {
+        gpiod_request_config_set_consumer(req_cfg, "lwm2m-gpio");
+    }
+
+    inst->line_request = gpiod_chip_request_lines(inst->chip, req_cfg, line_cfg);
+
+    if (req_cfg) gpiod_request_config_free(req_cfg);
+    gpiod_line_config_free(line_cfg);
+    gpiod_line_settings_free(settings);
+
+    if (!inst->line_request) {
+        avs_log(gpio_obj, ERROR, "Cannot request GPIO line %d", inst->gpio_pin);
+        release_gpio(inst);
+        return -1;
+    }
+
     avs_log(gpio_obj, INFO, "GPIO %d configured as output (state=%d)",
              inst->gpio_pin, inst->gpio_state);
     return 0;
+}
+
+static int gpio_write_value(gpio_instance_t *inst, int value) {
+    if (!inst->line_request) return -1;
+    enum gpiod_line_value val = value ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE;
+    return gpiod_line_request_set_value(inst->line_request,
+                                         (unsigned int)inst->gpio_pin, val);
+}
+
+static int gpio_read_value(gpio_instance_t *inst) {
+    if (!inst->line_request) return -1;
+    enum gpiod_line_value val = gpiod_line_request_get_value(inst->line_request,
+                                                              (unsigned int)inst->gpio_pin);
+    return (val == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -203,8 +199,8 @@ static int resource_read(anjay_t *anjay, const anjay_dm_object_def_t *const *obj
     case RID_GPIO_PIN:
         return anjay_ret_i32(ctx, inst->gpio_pin);
     case RID_GPIO_STATE:
-        if (inst->pin_exported) {
-            inst->gpio_state = gpio_read(inst->gpio_pin) ? true : false;
+        if (inst->line_request) {
+            inst->gpio_state = gpio_read_value(inst) ? true : false;
         }
         return anjay_ret_bool(ctx, inst->gpio_state);
     case RID_PULSE_DURATION:
@@ -242,8 +238,8 @@ static int resource_write(anjay_t *anjay, const anjay_dm_object_def_t *const *ob
         int ret = anjay_get_bool(ctx, &state);
         if (ret) return ret;
         inst->gpio_state = state;
-        if (inst->pin_exported) {
-            gpio_write(inst->gpio_pin, state ? 1 : 0);
+        if (inst->line_request) {
+            gpio_write_value(inst, state ? 1 : 0);
         }
         avs_log(gpio_obj, INFO, "GPIO %d set to %s",
                  inst->gpio_pin, state ? "HIGH" : "LOW");
@@ -276,10 +272,10 @@ static int resource_execute(anjay_t *anjay, const anjay_dm_object_def_t *const *
                  "EXECUTE Activate: GPIO %d HIGH for %d ms",
                  inst->gpio_pin, inst->pulse_duration_ms);
 
-        if (!inst->pin_exported) {
+        if (!inst->line_request) {
             if (setup_gpio_hw(inst) != 0) return ANJAY_ERR_INTERNAL;
         }
-        gpio_write(inst->gpio_pin, 1);
+        gpio_write_value(inst, 1);
         inst->gpio_state = true;
 
         struct timespec now = timespec_now();
@@ -295,8 +291,8 @@ static int resource_execute(anjay_t *anjay, const anjay_dm_object_def_t *const *
     case RID_DEACTIVATE: {
         avs_log(gpio_obj, INFO,
                  "EXECUTE Deactivate: GPIO %d LOW", inst->gpio_pin);
-        if (inst->pin_exported) {
-            gpio_write(inst->gpio_pin, 0);
+        if (inst->line_request) {
+            gpio_write_value(inst, 0);
         }
         inst->gpio_state = false;
         memset(&inst->activate_deadline, 0, sizeof(inst->activate_deadline));
@@ -338,6 +334,8 @@ int gpio_object_install(anjay_t *anjay) {
     inst->gpio_pin         = 17;
     inst->gpio_state       = false;
     inst->pulse_duration_ms = 1000;
+    inst->chip             = NULL;
+    inst->line_request     = NULL;
     snprintf(inst->description, sizeof(inst->description), "RPi GPIO %d", inst->gpio_pin);
 
     setup_gpio_hw(inst);
@@ -345,6 +343,7 @@ int gpio_object_install(anjay_t *anjay) {
     int ret = anjay_register_object(anjay, &GPIO_OBJ->def);
     if (ret) {
         avs_log(gpio_obj, ERROR, "Failed to register GPIO object");
+        release_gpio(inst);
         free(GPIO_OBJ);
         GPIO_OBJ = NULL;
         return ret;
@@ -367,7 +366,7 @@ void gpio_object_update(anjay_t *anjay) {
 
             avs_log(gpio_obj, INFO,
                      "Pulse complete: GPIO %d -> LOW", inst->gpio_pin);
-            gpio_write(inst->gpio_pin, 0);
+            gpio_write_value(inst, 0);
             inst->gpio_state = false;
             memset(&inst->activate_deadline, 0, sizeof(inst->activate_deadline));
 
@@ -381,10 +380,10 @@ void gpio_object_cleanup(void) {
 
     for (int i = 0; i < GPIO_OBJ->num_instances; i++) {
         gpio_instance_t *inst = &GPIO_OBJ->instances[i];
-        if (inst->pin_exported) {
-            gpio_write(inst->gpio_pin, 0);
-            gpio_unexport(inst->gpio_pin);
+        if (inst->line_request) {
+            gpio_write_value(inst, 0);
         }
+        release_gpio(inst);
     }
     free(GPIO_OBJ);
     GPIO_OBJ = NULL;
