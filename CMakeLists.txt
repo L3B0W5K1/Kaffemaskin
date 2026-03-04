@@ -4,8 +4,6 @@ project(lwm2m_gpio_client C)
 set(CMAKE_C_STANDARD 11)
 
 # ---- Find Anjay ----
-# If Anjay was installed system-wide via `make install`, find_package works.
-# Otherwise, set ANJAY_DIR to the Anjay build directory.
 find_package(anjay QUIET)
 
 if(NOT anjay_FOUND)
@@ -13,6 +11,10 @@ if(NOT anjay_FOUND)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ANJAY REQUIRED libanjay)
 endif()
+
+# ---- Find libgpiod ----
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GPIOD REQUIRED libgpiod)
 
 # ---- Build the client ----
 add_executable(lwm2m_gpio_client
@@ -23,12 +25,13 @@ add_executable(lwm2m_gpio_client
 target_include_directories(lwm2m_gpio_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${ANJAY_INCLUDE_DIRS}
+    ${GPIOD_INCLUDE_DIRS}
 )
 
 target_link_libraries(lwm2m_gpio_client PRIVATE
     anjay
     ${ANJAY_LIBRARIES}
+    ${GPIOD_LIBRARIES}
 )
 
-# Install target (optional)
 install(TARGETS lwm2m_gpio_client DESTINATION bin)
