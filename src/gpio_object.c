@@ -328,30 +328,53 @@ int gpio_object_install(anjay_t *anjay) {
 
     GPIO_OBJ->def = &GPIO_OBJ_DEF;
 
-    GPIO_OBJ->num_instances = 1;
-    gpio_instance_t *inst = &GPIO_OBJ->instances[0];
-    inst->iid              = 0;
-    inst->gpio_pin         = 17;
-    inst->gpio_state       = false;
-    inst->pulse_duration_ms = 1000;
-    inst->chip             = NULL;
-    inst->line_request     = NULL;
-    snprintf(inst->description, sizeof(inst->description), "RPi GPIO %d", inst->gpio_pin);
+    static const struct {
+        int         pin;        /* BCM */
+        int         pulse_ms;
+        const char *desc;
+    } cfg[] = {
+        { 17, 500, "ON"        },   /* /26241/0 */
+        { 27, 500, "Big Cup"   },   /* /26241/1 */
+        { 22, 500, "Small Cup" },   /* /26241/2 */
+        { 23, 500, "OPTIONS"   },   /* /26241/3 */
+    };
+    GPIO_OBJ->num_instances = sizeof(cfg) / sizeof(cfg[0]);
 
-    setup_gpio_hw(inst);
+    for (int i = 0; i < GPIO_OBJ->num_instances; i++) {
+        gpio_instance_t *inst = &GPIO_OBJ->instances[i];
+        inst->iid               = (anjay_iid_t)i;
+        inst->gpio_pin          = cfg[i].pin;
+        inst->gpio_state        = false;
+        inst->pulse_duration_ms = cfg[i].pulse_ms;
+        inst->chip              = NULL;
+        inst->line_request      = NULL;
+        snprintf(inst->description, sizeof(inst->description), "%s", cfg[i].desc);
+
+        if (setup_gpio_hw(inst) != 0) {
+            avs_log(gpio_obj, ERROR,
+                    "setup_gpio_hw failed for pin %d (%s)",
+                    inst->gpio_pin, cfg[i].desc);
+        }
+    }
 
     int ret = anjay_register_object(anjay, &GPIO_OBJ->def);
     if (ret) {
         avs_log(gpio_obj, ERROR, "Failed to register GPIO object");
-        release_gpio(inst);
+        for (int i = 0; i < GPIO_OBJ->num_instances; i++) {
+            release_gpio(&GPIO_OBJ->instances[i]);
+        }
         free(GPIO_OBJ);
         GPIO_OBJ = NULL;
         return ret;
     }
 
-    avs_log(gpio_obj, INFO,
-             "GPIO Object /%d installed (instance 0, pin %d)",
-             GPIO_OBJECT_ID, inst->gpio_pin);
+    for (int i = 0; i < GPIO_OBJ->num_instances; i++) {
+        avs_log(gpio_obj, INFO,
+                "GPIO Object /%d/%d installed (pin %d, %s)",
+                GPIO_OBJECT_ID, i,
+                GPIO_OBJ->instances[i].gpio_pin,
+                GPIO_OBJ->instances[i].description);
+    }
     return 0;
 }
 
