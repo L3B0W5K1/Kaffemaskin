@@ -83,7 +83,6 @@ static void print_usage(const char *progname) {
         "  -s <ip>     Leshan server IP (default: localhost)\n"
         "  -p <port>   Leshan CoAP port  (default: 5683)\n"
         "  -n <name>   Endpoint name      (default: rpi-gpio-client)\n"
-        "  -g <pin>    BCM GPIO pin       (default: 17)\n"
         "  -h          Show this help\n",
         progname);
 }
@@ -96,15 +95,13 @@ int main(int argc, char *argv[]) {
     const char *server_ip   = "localhost";
     int         server_port = 5683;
     const char *ep_name     = "rpi-gpio-client";
-    int         gpio_pin    = 17;
 
     int opt;
-    while ((opt = getopt(argc, argv, "s:p:n:g:h")) != -1) {
+    while ((opt = getopt(argc, argv, "s:p:n:h")) != -1) {
         switch (opt) {
         case 's': server_ip   = optarg;        break;
         case 'p': server_port = atoi(optarg);  break;
         case 'n': ep_name     = optarg;        break;
-        case 'g': gpio_pin    = atoi(optarg);  break;
         case 'h':
         default:
             print_usage(argv[0]);
@@ -118,7 +115,6 @@ int main(int argc, char *argv[]) {
     avs_log(lwm2m_main, INFO, "LwM2M GPIO Client starting");
     avs_log(lwm2m_main, INFO, "  Server:   %s", server_uri);
     avs_log(lwm2m_main, INFO, "  Endpoint: %s", ep_name);
-    avs_log(lwm2m_main, INFO, "  GPIO pin: %d (BCM)", gpio_pin);
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
@@ -168,7 +164,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        int timeout_ms = anjay_sched_calculate_wait_time_ms(anjay, 100);
+        int timeout_ms = anjay_sched_calculate_wait_time_ms(anjay, 10);
 
         poll(pollfds, num_fds, timeout_ms);
 
