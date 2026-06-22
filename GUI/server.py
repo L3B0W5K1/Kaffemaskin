@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-Tiny single-file server: serves espresso_remote.html and proxies /api/* to
-the Leshan demo server. Sidesteps CORS — both the page and the API are
-same-origin from the browser's point of view.
+Tiny single-file server: serves espresso_remote.html, any static asset next
+to it (e.g. background.jpg), and proxies /api/* to the Leshan demo server.
 
 Drop this next to espresso_remote.html, then:
     python3 serve.py                          # defaults to localhost:8080
     python3 serve.py --leshan http://192.168.1.42:8080
     python3 serve.py --port 9000
 
-Open http://<this-host>:9000/  in any browser. In the GUI, leave the
-"Leshan" field empty so requests go to the same origin (this script).
+Open http://<this-host>:9000/ in any browser. In the GUI, leave the "Leshan"
+field empty so requests go to the same origin (this script).
 """
 
 import argparse
 import http.server
+import mimetypes
 import socketserver
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import unquote
 
 HTML_FILE = Path(__file__).parent / "espresso_remote.html"
 
@@ -32,7 +33,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/api/"):
             self._proxy("GET")
         else:
-            self.send_error(404)
+            self._serve_static()
 
     def do_POST(self):
         if self.path.startswith("/api/"):
@@ -53,6 +54,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         data = HTML_FILE.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_static(self):
+        rel = unquote(self.path.lstrip("/"))
+        root = HTML_FILE.parent.resolve()
+        target = (root / rel).resolve()
+        # path-traversal guard + must be a real file
+        if not str(target).startswith(str(root)) or not target.is_file():
+            self.send_error(404)
+            return
+        ctype, _ = mimetypes.guess_type(target.name)
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -92,7 +109,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(msg)
 
     def log_message(self, fmt, *args):
-        # Compact one-line log
         print(f"{self.command:4s} {self.path}  -> {args[1] if len(args) > 1 else '-'}")
 
 
