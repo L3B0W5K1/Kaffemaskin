@@ -260,6 +260,10 @@ INFO [anjay]      registration successful
 
 ---
 
+## GUI
+
+Put GUI files on the same machine as leshan (the server). Start with `python3 server.py`
+
 ## Running Without Root
 
 Add your user to the `gpio` group to access `/dev/gpiochip0` without `sudo`:
