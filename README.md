@@ -260,9 +260,11 @@ INFO [anjay]      registration successful
 
 ---
 
-## GUI
+## 6:  GUI
 
 Put GUI files on the same machine as leshan (the server). Start with `python3 server.py`
+
+Go to <server-ip>:9000
 
 ## Running Without Root
 
